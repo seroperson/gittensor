@@ -2,9 +2,10 @@
 
 """Thread-safe JSON storage for miner GitHub PATs.
 
-Validators store PATs received via PatBroadcastSynapse in miner_pats.json at the project root.
-The scoring loop snapshots the full file once per round via load_all_pats(); mid-round
-broadcasts update the file but do not affect the current scoring round.
+Validators store PATs received via PatBroadcastSynapse in `miner_pats.json`
+(path resolved via gittensor.paths.pats_file; legacy fallback preserved).
+The scoring loop snapshots the full file once per round via load_all_pats();
+mid-round broadcasts update the file but do not affect the current scoring round.
 """
 
 import json
@@ -12,10 +13,9 @@ import os
 import tempfile
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
-PATS_FILE = Path(__file__).resolve().parents[2] / 'data' / 'miner_pats.json'
+from gittensor import paths
 
 _lock = threading.Lock()
 
@@ -23,7 +23,7 @@ _lock = threading.Lock()
 def ensure_pats_file() -> None:
     """Create the PATs file with an empty list if it doesn't exist. Called on validator boot."""
     with _lock:
-        if not PATS_FILE.exists():
+        if not paths.pats_file().exists():
             _write_file([])
 
 
@@ -78,23 +78,25 @@ def remove_pat(uid: int) -> bool:
 
 def _read_file() -> list[dict]:
     """Read and parse the JSON file. Must be called while holding _lock."""
-    if not PATS_FILE.exists():
+    path = paths.pats_file()
+    if not path.exists():
         return []
     try:
-        return json.loads(PATS_FILE.read_text())
+        return json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return []
 
 
 def _write_file(entries: list[dict]) -> None:
     """Atomically write entries to JSON file. Must be called while holding _lock."""
-    PATS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    path = paths.pats_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
     # Write to temp file then atomically replace to avoid partial reads
-    fd, tmp_path = tempfile.mkstemp(dir=PATS_FILE.parent, suffix='.tmp')
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix='.tmp')
     try:
         with os.fdopen(fd, 'w') as f:
             json.dump(entries, f, indent=2)
-        os.replace(tmp_path, PATS_FILE)
+        os.replace(tmp_path, path)
     except BaseException:
         # Clean up temp file on any failure
         try:

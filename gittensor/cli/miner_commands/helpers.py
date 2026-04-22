@@ -7,11 +7,11 @@ from __future__ import annotations
 import json
 import sys
 from contextlib import nullcontext
-from pathlib import Path
 
 import click
 from rich.console import Console
 
+from gittensor import paths
 from gittensor.constants import NETWORK_MAP
 
 console = Console()
@@ -31,8 +31,8 @@ def _get_validator_axons(metagraph) -> tuple[list, list]:
 
 
 def _load_config_value(key: str):
-    """Load a value from ~/.gittensor/config.json, or None."""
-    config_file = Path.home() / '.gittensor' / 'config.json'
+    """Load a value from the resolved gittensor config file, or None."""
+    config_file = paths.config_file()
     if not config_file.exists():
         return None
     try:

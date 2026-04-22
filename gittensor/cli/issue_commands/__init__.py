@@ -28,8 +28,6 @@ from .help import StyledGroup
 
 # Re-export helpers
 from .helpers import (
-    CONFIG_FILE,
-    GITTENSOR_DIR,
     NETWORK_MAP,
     console,
     get_contract_address,
@@ -93,7 +91,5 @@ __all__ = [
     'get_contract_address',
     'resolve_network',
     'read_issues_from_contract',
-    'GITTENSOR_DIR',
-    'CONFIG_FILE',
     'NETWORK_MAP',
 ]

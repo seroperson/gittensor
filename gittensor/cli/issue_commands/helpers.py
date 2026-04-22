@@ -12,13 +12,13 @@ import struct
 import sys
 from contextlib import nullcontext
 from decimal import Decimal, InvalidOperation
-from pathlib import Path
 from typing import Any, Callable, ContextManager, Dict, List, Optional, Tuple, TypeVar
 
 import click
 import requests
 from rich.console import Console
 
+from gittensor import paths
 from gittensor.cli.issue_commands.tables import build_pr_table
 from gittensor.constants import NETWORK_MAP
 from gittensor.validator.issue_competitions.storage_utils import (
@@ -28,10 +28,6 @@ from gittensor.validator.issue_competitions.storage_utils import (
     get_contract_child_storage_key,
     read_contract_packed_storage_bytes,
 )
-
-# Default CLI config paths
-GITTENSOR_DIR = Path.home() / '.gittensor'
-CONFIG_FILE = GITTENSOR_DIR / 'config.json'
 
 # ALPHA token conversion
 ALPHA_DECIMALS = 9
@@ -574,11 +570,11 @@ def require_valid_ss58(address: str, param_name: str = 'address') -> str:
 
 def load_config() -> Dict[str, Any]:
     """
-    Load configuration from ~/.gittensor/config.json.
+    Load configuration from the resolved gittensor config file.
 
-    Priority:
+    See gittensor.paths for location resolution. Priority at the value level:
     1. CLI arguments (highest - handled by callers)
-    2. ~/.gittensor/config.json
+    2. Resolved config file
     3. Defaults
 
     Config file format:
@@ -595,9 +591,10 @@ def load_config() -> Dict[str, Any]:
     Returns:
         Dict with all config keys
     """
-    if CONFIG_FILE.exists():
+    config_file = paths.config_file()
+    if config_file.exists():
         try:
-            with open(CONFIG_FILE, 'r') as f:
+            with open(config_file, 'r') as f:
                 return json.load(f)
         except (json.JSONDecodeError, IOError):
             pass

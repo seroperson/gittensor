@@ -26,9 +26,8 @@ def _run(coro):
 @pytest.fixture(autouse=True)
 def use_tmp_pats_file(tmp_path, monkeypatch):
     """Redirect PAT storage to a temporary file for each test."""
-    tmp_file = tmp_path / 'miner_pats.json'
-    monkeypatch.setattr(pat_storage, 'PATS_FILE', tmp_file)
-    return tmp_file
+    monkeypatch.setenv('GITTENSOR_DATA_DIR', str(tmp_path))
+    return tmp_path / 'miner_pats.json'
 
 
 @pytest.fixture

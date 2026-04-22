@@ -36,10 +36,9 @@ from click.shell_completion import get_completion_class
 from rich.console import Console
 from rich.table import Table
 
-from gittensor import __version__
+from gittensor import __version__, paths
 from gittensor.cli.issue_commands import register_commands
 from gittensor.cli.issue_commands.help import StyledAliasGroup, StyledGroup
-from gittensor.cli.issue_commands.helpers import CONFIG_FILE, GITTENSOR_DIR
 
 console = Console()
 
@@ -64,13 +63,14 @@ def show_config():
     """Show current CLI configuration"""
     console.print('\n[bold]Gittensor CLI Configuration[/bold]\n')
 
-    if not CONFIG_FILE.exists():
-        console.print('[yellow]No config file found at ~/.gittensor/config.json[/yellow]')
+    config_file = paths.config_file()
+    if not config_file.exists():
+        console.print(f'[yellow]No config file found at {config_file}[/yellow]')
         console.print('[dim]Run ./up.sh --issues to create config[/dim]')
         return
 
     try:
-        config = json.loads(CONFIG_FILE.read_text())
+        config = json.loads(config_file.read_text())
 
         table = Table(show_header=True)
         table.add_column('Setting', style='cyan')
@@ -84,7 +84,7 @@ def show_config():
             table.add_row(key, str_val)
 
         console.print(table)
-        console.print(f'\n[dim]Config file: {CONFIG_FILE}[/dim]\n')
+        console.print(f'\n[dim]Config file: {config_file}[/dim]\n')
 
     except json.JSONDecodeError:
         console.print('[red]Error: Invalid JSON in config file[/red]')
@@ -98,7 +98,7 @@ def show_config():
 def config_set(key: str, value: str):
     """Set a configuration value.
 
-    [dim]Use this command to override values stored in `~/.gittensor/config.json`.[/dim]
+    [dim]Writes to the resolved gittensor config file (XDG-aware; legacy `~/.gittensor/config.json` still read).[/dim]
 
     [dim]Common keys:
         wallet              Wallet name
@@ -114,14 +114,14 @@ def config_set(key: str, value: str):
         $ gitt config set network local
     [/dim]
     """
-    # Ensure config directory exists
-    GITTENSOR_DIR.mkdir(parents=True, exist_ok=True)
+    config_file = paths.config_file()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Load existing config or start fresh
     config = {}
-    if CONFIG_FILE.exists():
+    if config_file.exists():
         try:
-            config = json.loads(CONFIG_FILE.read_text())
+            config = json.loads(config_file.read_text())
         except json.JSONDecodeError:
             console.print('[yellow]Warning: Existing config was invalid, starting fresh[/yellow]')
 
@@ -130,7 +130,7 @@ def config_set(key: str, value: str):
     config[key] = value
 
     # Write config
-    CONFIG_FILE.write_text(json.dumps(config, indent=2))
+    config_file.write_text(json.dumps(config, indent=2))
 
     if old_value is not None:
         console.print(f'[green]Updated {key}:[/green] {old_value} → {value}')
