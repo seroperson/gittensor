@@ -6,13 +6,16 @@ providing clean methods for storing miners, pull requests, issues, file changes,
 and miner evaluations.
 """
 
+import json
 import logging
 from contextlib import contextmanager
-from typing import List
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 import numpy as np
 
 from gittensor.classes import FileChange, Issue, Miner, MinerEvaluation, PullRequest
+from gittensor.utils.github_api_tools import FileContentPair
 
 from .queries import (
     BULK_UPSERT_FILE_CHANGES,
@@ -23,8 +26,50 @@ from .queries import (
     CLEANUP_STALE_MINER_EVALUATIONS_BY_HOTKEY,
     CLEANUP_STALE_MINERS,
     CLEANUP_STALE_MINERS_BY_HOTKEY,
+    SELECT_PR_API_CACHE,
     SET_MINER,
+    UPSERT_PR_API_CACHE,
 )
+
+
+@dataclass
+class CachedPrApiData:
+    """Raw GitHub-payload cache for a MERGED PR at a fixed head_sha.
+
+    Holds the immutable outputs of the three GitHub helpers that we skip
+    on a cache hit. Scoring still re-runs over these values each round.
+    """
+
+    file_changes: List[FileChange]
+    file_contents: Dict[str, FileContentPair]
+
+
+def _serialize_file_change(fc: FileChange) -> dict:
+    return {
+        'filename': fc.filename,
+        'changes': fc.changes,
+        'additions': fc.additions,
+        'deletions': fc.deletions,
+        'status': fc.status,
+        'patch': fc.patch,
+        'file_extension': fc.file_extension,
+        'previous_filename': fc.previous_filename,
+    }
+
+
+def _deserialize_file_change(d: dict, pr_number: int, repository_full_name: str) -> FileChange:
+    return FileChange(
+        pr_number=pr_number,
+        repository_full_name=repository_full_name,
+        filename=d['filename'],
+        changes=d['changes'],
+        additions=d['additions'],
+        deletions=d['deletions'],
+        status=d['status'],
+        patch=d.get('patch'),
+        file_extension=d.get('file_extension'),
+        previous_filename=d.get('previous_filename'),
+    )
 
 
 class BaseRepository:
@@ -132,6 +177,83 @@ class Repository(BaseRepository):
         reverse_eval_params = reverse_params + (evaluation.evaluation_timestamp,)
         self.execute_command(CLEANUP_STALE_MINER_EVALUATIONS_BY_HOTKEY, reverse_eval_params)
         self.execute_command(CLEANUP_STALE_MINERS_BY_HOTKEY, reverse_params)
+
+    def get_cached_pr_api_data(
+        self,
+        repository_full_name: str,
+        pr_number: int,
+        head_sha: str,
+    ) -> Optional[CachedPrApiData]:
+        """Fetch the cached raw GitHub payload for a MERGED PR at head_sha.
+
+        Returns None on miss, head_sha mismatch, or any DB/parse error.
+        Callers must tolerate None and fall through to the full fetch path.
+        """
+        if not head_sha:
+            return None
+
+        try:
+            with self.get_cursor() as cursor:
+                cursor.execute(SELECT_PR_API_CACHE, (repository_full_name, pr_number, head_sha))
+                row = cursor.fetchone()
+        except Exception as e:
+            self.logger.error(f'Error reading pr_api_cache: {e}')
+            return None
+
+        if not row:
+            return None
+
+        try:
+            fc_payload, contents_payload = row
+            # psycopg2 returns JSONB as a parsed dict/list by default; tolerate
+            # str too in case the column is plain TEXT or a custom codec is set.
+            if isinstance(fc_payload, str):
+                fc_payload = json.loads(fc_payload)
+            if isinstance(contents_payload, str):
+                contents_payload = json.loads(contents_payload)
+
+            file_changes = [_deserialize_file_change(d, pr_number, repository_full_name) for d in fc_payload]
+            file_contents = {
+                filename: FileContentPair(old_content=pair.get('old'), new_content=pair.get('new'))
+                for filename, pair in contents_payload.items()
+            }
+        except (KeyError, ValueError, TypeError) as e:
+            self.logger.error(f'Corrupt pr_api_cache row for {repository_full_name}#{pr_number}: {e}')
+            return None
+
+        return CachedPrApiData(file_changes=file_changes, file_contents=file_contents)
+
+    def store_pr_api_cache(
+        self,
+        repository_full_name: str,
+        pr_number: int,
+        head_sha: str,
+        file_changes: List[FileChange],
+        file_contents: Dict[str, FileContentPair],
+    ) -> bool:
+        """Persist the raw GitHub payload for a MERGED PR at head_sha."""
+        if not head_sha:
+            return False
+
+        fc_payload = [_serialize_file_change(fc) for fc in file_changes]
+        contents_payload = {
+            filename: {'old': pair.old_content, 'new': pair.new_content} for filename, pair in file_contents.items()
+        }
+
+        try:
+            from psycopg2.extras import Json
+
+            with self.get_cursor() as cursor:
+                cursor.execute(
+                    UPSERT_PR_API_CACHE,
+                    (repository_full_name, pr_number, head_sha, Json(fc_payload), Json(contents_payload)),
+                )
+                self.db.commit()
+                return True
+        except Exception as e:
+            self.db.rollback()
+            self.logger.error(f'Error writing pr_api_cache for {repository_full_name}#{pr_number}: {e}')
+            return False
 
     def store_pull_requests_bulk(self, pull_requests: List[PullRequest]) -> int:
         """

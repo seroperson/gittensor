@@ -19,6 +19,7 @@ from gittensor.validator.oss_contributions.scoring import (
     finalize_miner_scores,
     score_miner_prs,
 )
+from gittensor.validator.storage.repository import Repository
 from gittensor.validator.utils.load_weights import LanguageConfig, RepositoryConfig, TokenConfig
 
 # NOTE: there was a circular import error, needed this if to resolve it
@@ -34,6 +35,7 @@ async def evaluate_miners_pull_requests(
     programming_languages: Dict[str, LanguageConfig],
     token_config: TokenConfig,
     stale_hotkey: Optional[str] = None,
+    repo: Optional[Repository] = None,
 ) -> MinerEvaluation:
     """
     Entry point from taking a miners response -> Get PRs -> Score PRs
@@ -46,6 +48,7 @@ async def evaluate_miners_pull_requests(
         programming_languages: The programming languages and their weights
         token_config: Token-based scoring weights configuration
         stale_hotkey: If set, the UID has a stored PAT from this old hotkey (re-registration detected)
+        repo: Storage handle for the MERGED-PR score cache, or None to disable
 
     Returns:
         MinerEvaluation: The object containing scores, valid_prs, etc.
@@ -60,7 +63,7 @@ async def evaluate_miners_pull_requests(
 
     load_miners_prs(miner_eval, master_repositories)
 
-    score_miner_prs(miner_eval, master_repositories, programming_languages, token_config)
+    score_miner_prs(miner_eval, master_repositories, programming_languages, token_config, repo)
 
     # Clear PAT after scoring to avoid storing sensitive data in memory
     miner_eval.github_pat = None
@@ -94,6 +97,10 @@ async def get_rewards(
 
     miner_evaluations: Dict[int, MinerEvaluation] = {}
 
+    repo: Optional[Repository] = (
+        self.db_storage.repo if self.db_storage is not None and self.db_storage.is_enabled() else None
+    )
+
     # Look up PATs and calculate score.
     for uid in uids:
         hotkey = self.metagraph.hotkeys[uid]
@@ -108,13 +115,7 @@ async def get_rewards(
 
         # Calculate score
         miner_evaluation = await evaluate_miners_pull_requests(
-            uid,
-            hotkey,
-            pat,
-            master_repositories,
-            programming_languages,
-            token_config,
-            stale_hotkey=stale_hotkey,
+            uid, hotkey, pat, master_repositories, programming_languages, token_config, stale_hotkey, repo
         )
         miner_evaluations[uid] = miner_evaluation
 

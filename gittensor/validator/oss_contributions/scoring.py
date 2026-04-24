@@ -2,7 +2,7 @@
 # Copyright © 2025 Entrius
 
 from datetime import datetime
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import bittensor as bt
 
@@ -42,6 +42,7 @@ from gittensor.utils.github_api_tools import (
     get_pull_request_file_changes,
 )
 from gittensor.validator.oss_contributions.credibility import check_eligibility
+from gittensor.validator.storage.repository import Repository
 from gittensor.validator.utils.datetime_utils import calculate_time_decay
 from gittensor.validator.utils.load_weights import LanguageConfig, RepositoryConfig, TokenConfig, resolve_repo_weight
 from gittensor.validator.utils.tree_sitter_scoring import calculate_token_score_from_file_changes
@@ -52,6 +53,7 @@ def score_miner_prs(
     master_repositories: Dict[str, RepositoryConfig],
     programming_languages: Dict[str, LanguageConfig],
     token_config: TokenConfig,
+    repo: Optional[Repository] = None,
 ) -> None:
     """Score all pull requests for a miner."""
 
@@ -71,7 +73,7 @@ def score_miner_prs(
     for label, prs in pr_groups:
         for i, pr in enumerate(prs, start=1):
             bt.logging.info(f'\n[{i}/{len(prs)}] {label} PR #{pr.number} in {pr.repository_full_name}')
-            score_pull_request(pr, miner_eval, master_repositories, programming_languages, token_config)
+            score_pull_request(pr, miner_eval, master_repositories, programming_languages, token_config, repo=repo)
 
 
 def score_pull_request(
@@ -80,8 +82,15 @@ def score_pull_request(
     master_repositories: Dict[str, RepositoryConfig],
     programming_languages: Dict[str, LanguageConfig],
     token_config: TokenConfig,
+    repo: Optional[Repository] = None,
 ) -> None:
-    """Scores a single PR and populates relevant PullRequest fields."""
+    """Scores a single PR and populates relevant PullRequest fields.
+
+    For MERGED PRs whose `(repo, number, head_sha)` is already in the
+    `pr_api_cache` table, the three GitHub helpers are skipped and the raw
+    payload is hydrated from storage. Scores are always recomputed fresh
+    from that payload using the current config.
+    """
     assert miner_eval.github_pat is not None, f'UID {miner_eval.uid} has no github_pat'
 
     repo_config = master_repositories.get(pr.repository_full_name)
@@ -89,16 +98,9 @@ def score_pull_request(
         bt.logging.warning(f'{pr.repository_full_name} not in master repositories. Skipping...')
         return
 
-    # Only fetch file changes from GitHub if not already loaded (they are preloaded for testing only)
-    if not pr.file_changes:
-        file_changes = get_pull_request_file_changes(pr.repository_full_name, pr.number, miner_eval.github_pat)
-        if not file_changes:
-            bt.logging.warning('No file changes found.')
-            return
-        pr.set_file_changes(file_changes)
-
-    # Fetch full file contents for token-based scoring
-    file_contents = fetch_file_contents_for_pr(pr, miner_eval.github_pat)
+    file_contents = _resolve_pr_api_data(pr, miner_eval.github_pat, repo)
+    if file_contents is None:
+        return
 
     pr.base_score = calculate_base_score(pr, programming_languages, token_config, file_contents)
 
@@ -106,6 +108,44 @@ def score_pull_request(
 
     if pr.pr_state == PRState.MERGED:
         miner_eval.unique_repos_contributed_to.add(pr.repository_full_name)
+
+
+def _resolve_pr_api_data(
+    pr: PullRequest,
+    github_pat: str,
+    repo: Optional[Repository],
+) -> Optional[Dict[str, FileContentPair]]:
+    """Populate pr.file_changes and return file_contents, hitting the pr_api_cache on MERGED.
+
+    Returns None when there are no file changes to score (matches the old
+    "No file changes found." early exit). The caller treats this as a skip.
+    On a miss for a MERGED PR, the freshly-fetched payload is persisted back
+    to the cache so the next round's hit saves all three GitHub calls.
+    """
+    if pr.pr_state == PRState.MERGED and pr.head_ref_oid and repo is not None:
+        cached = repo.get_cached_pr_api_data(pr.repository_full_name, pr.number, pr.head_ref_oid)
+        if cached is not None:
+            pr.set_file_changes(cached.file_changes)
+            bt.logging.info(
+                f'Cache hit (pr_api_cache): MERGED PR #{pr.number} in {pr.repository_full_name} '
+                f'at {pr.head_ref_oid[:8]} — skipping 3 GitHub calls'
+            )
+            return cached.file_contents
+
+    # Pre-loaded file_changes mean a test has injected them; skip the fetch.
+    if not pr.file_changes:
+        file_changes = get_pull_request_file_changes(pr.repository_full_name, pr.number, github_pat)
+        if not file_changes:
+            bt.logging.warning('No file changes found.')
+            return None
+        pr.set_file_changes(file_changes)
+
+    file_contents = fetch_file_contents_for_pr(pr, github_pat)
+
+    if pr.pr_state == PRState.MERGED and pr.head_ref_oid and repo is not None and file_contents and pr.file_changes:
+        repo.store_pr_api_cache(pr.repository_full_name, pr.number, pr.head_ref_oid, pr.file_changes, file_contents)
+
+    return file_contents
 
 
 def fetch_file_contents_for_pr(pr: PullRequest, github_pat: str) -> Dict[str, FileContentPair]:

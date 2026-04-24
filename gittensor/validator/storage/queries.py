@@ -90,6 +90,24 @@ DO UPDATE SET
     updated_at = NOW()
 """
 
+# Read-through cache for the immutable GitHub payload of a MERGED PR.
+# Matches on head_sha so a row with a stale head_sha is a miss.
+SELECT_PR_API_CACHE = """
+SELECT file_changes_json, file_contents_json
+FROM pr_api_cache
+WHERE repository_full_name = %s AND pr_number = %s AND head_sha = %s
+"""
+
+UPSERT_PR_API_CACHE = """
+INSERT INTO pr_api_cache (repository_full_name, pr_number, head_sha, file_changes_json, file_contents_json)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (repository_full_name, pr_number) DO UPDATE SET
+    head_sha = EXCLUDED.head_sha,
+    file_changes_json = EXCLUDED.file_changes_json,
+    file_contents_json = EXCLUDED.file_contents_json,
+    cached_at = NOW()
+"""
+
 # Issue Queries
 BULK_UPSERT_ISSUES = """
 INSERT INTO issues (
